@@ -1,5 +1,21 @@
 # CloudPanel-Scripts
 
+⚠️ **WARNING: IMPORTANT LIMITATIONS** ⚠️
+- These scripts are experimental and may not work in all scenarios
+- **TAKE A SNAPSHOT** of your server before testing
+- **Not Compatible** with:
+  - NodeJS sites
+  - Python sites
+- The following items are **NOT** restored:
+  - SSH users
+  - FTP users
+  - Log files
+  - Security settings:
+    - IP Blocking rules
+    - Bot Blocking configurations
+    - Basic Authentication
+    - Cloudflare IP allowlist settings
+
 A collection of utility scripts to enhance backup and restoration capabilities in CloudPanel when using rclone as your backup method.
 
 ## 🚀 Quick Start
