@@ -83,10 +83,12 @@ chmod +x /scripts/*.sh
 echo "* * * * * root /usr/bin/bash /scripts/hijackCloudpanelBackups.sh" >> /etc/cron.d/hijack-backups
 ```
 
-4. Verify installation:
+4. After your next backup runs try restoring a site with:
 ```bash
-ls -l /scripts/*.sh
+/scripts/restoreBackup.sh
 ```
+
+5. Follow the prompts on screen.
 
 ## 📝 Notes
 
