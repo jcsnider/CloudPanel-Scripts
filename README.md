@@ -1,19 +1,54 @@
 # CloudPanel-Scripts
 
-Work in progress scripts to make restoring sites in CloudPanel more manageable. These scripts only work if you are using rclone as your backup method. All of these scripts should be placed in `/scripts`
+A collection of utility scripts to enhance backup and restoration capabilities in CloudPanel when using rclone as your backup method.
 
- - backupCronjobs.sh looks at the cronjobs for each site and stores them in the sites home directory in a cronjobs file so that cronjobs are backed up
- - hijackCloudpanelBackups.sh this looks at the default clp-rclone cron job, steals it's time config, disables it, and injects our own backup job which includes database backups and cronjobs at the time of backup
- - restoreBackup.sh this is a script that you can run to actually restore a php, wordpress, reverse proxy, or static html website. This script needs to be ran from the folder it's contained in.
+## 🚀 Quick Start
 
-
- I recommend making the following cron entry:
- `* * * * * root /usr/bin/bash /scripts/hijackCloudpanelBackups.sh`
-
-That entry will monitor for changes to the rclone backup config/schedule via the GUI and adapt our custom backups to run at that time and with that config instead.
-
-Note: CloudPanel does not back up database credentials by default. For Wordpress sites this isn't a problem we can randomly create the credentials and the restoreBackup.sh script will automatically update wp-config.php. In other cases you can create a databases.json file in the home directory for each site where it's important for the database credentials to remain the same. The format of the databases.json file is:
+1. Clone this repository to your server
+2. Copy all scripts to `/scripts` directory
+3. chmod +x /scripts/*.sh
+4. Set up the monitoring cron job:
+```bash
+* * * * * root /usr/bin/bash /scripts/hijackCloudpanelBackups.sh
 ```
+
+## 📦 Scripts Overview
+
+### backupCronjobs.sh
+Backs up site-specific cronjobs by:
+- Scanning each site's cron configuration
+- Storing configurations in the site's home directory
+- Ensuring cronjobs are included in backups
+
+### hijackCloudpanelBackups.sh
+Enhances CloudPanel's default backup system by:
+- Intercepting the default clp-rclone cron configuration
+- Disabling the default backup job
+- Implementing an improved backup solution that includes:
+  - Database backups at time of backup
+  - Cronjob configurations
+  - Original backup timing
+
+### restoreBackup.sh
+Comprehensive site restoration tool supporting:
+- PHP applications
+- WordPress sites
+- Reverse proxy configurations
+- Static HTML websites
+
+## 💾 Database Credentials
+
+CloudPanel doesn't backup database credentials by default. There are two scenarios:
+
+### WordPress Sites
+No action required - the restoration script will:
+- Generate new credentials automatically
+- Update wp-config.php accordingly
+
+### Other Applications
+Create a `databases.json` file in the site's home directory with the following structure:
+
+```json
 {
   "databases": [
     {
@@ -28,5 +63,33 @@ Note: CloudPanel does not back up database credentials by default. For Wordpress
     }
   ]
 }
-
 ```
+
+## ⚙️ Installation
+
+1. Download the scripts:
+```bash
+git clone https://github.com/yourusername/CloudPanel-Scripts.git
+```
+
+2. Move scripts to the correct location:
+```bash
+cp CloudPanel-Scripts/*.sh /scripts/
+chmod +x /scripts/*.sh
+```
+
+3. Set up the monitoring cron job:
+```bash
+echo "* * * * * root /usr/bin/bash /scripts/hijackCloudpanelBackups.sh" >> /etc/cron.d/hijack-backups
+```
+
+4. Verify installation:
+```bash
+ls -l /scripts/*.sh
+```
+
+## 📝 Notes
+
+- All scripts must be placed in the `/scripts` directory
+- Requires rclone backup method configured in CloudPanel
+- The monitoring cron job ensures backup timing stays synchronized with CloudPanel's GUI settings
