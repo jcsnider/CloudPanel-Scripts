@@ -27,7 +27,7 @@ set -e
 # Function to prompt for SSL installation
 ask_ssl_installation() {
     while true; do
-        echo -e "${GREEN}Would you like to install SSL certificates for the restored sites? (y/n)${NC}"
+        echo -e "${GREEN}Would you like to install SSL certificates for the restored site? (y/n)${NC}"
         read -r response
         case $response in
             [Yy]* ) return 0;;
@@ -111,36 +111,41 @@ main() {
     fi
 
     # Display site options to user
-    echo "Please select the sites to restore (space-separated numbers for multiple, 'all' for all sites, 'q' to quit, 'c' to continue):"
-    select site in $sites "all"; do
-        if [ "$REPLY" = "all" ]; then
-            selected_sites=$sites
-            break
-        elif [ "$REPLY" = "c" ] || [ "$REPLY" = "C" ]; then
-            break
-        elif [ "$REPLY" = "q" ] || [ "$REPLY" = "Q" ]; then
+    echo "Please select the site to restore (enter number or 'q' to quit):"
+    select site in $sites; do
+        if [ "$REPLY" = "q" ] || [ "$REPLY" = "Q" ]; then
             echo "Exiting..."
             exit 0
         elif [ -n "$site" ]; then
-            if [ -z "$selected_sites" ]; then
-                selected_sites=$site
-            else
-                selected_sites="$selected_sites $site"
-            fi
-            echo "Current selection: $selected_sites"
-            echo "Select another site, 'all' for all remaining, or enter c to continue"
-        elif [ -z "$REPLY" ]; then
-            if [ -n "$selected_sites" ]; then
-                break
-            else
-                echo "No sites selected. Please select at least one site."
-            fi
+            selected_site=$site
+            break
         else
             echo "Invalid selection. Please try again."
         fi
     done
 
-    echo "Selected sites: $selected_sites"
+    echo "Selected site: $selected_site"
+
+    # Prompt for and validate new domain name
+    while true; do
+        echo -e "${GREEN}Please enter the domain name to restore as (e.g., example.com):${NC}"
+        read -r domain_input
+        
+        echo -e "${GREEN}You entered: $domain_input. Is this correct? (y/n)${NC}"
+        read -r confirm
+        
+        if [[ $confirm =~ ^[Yy] ]]; then
+            # Check if domain exists in database
+            existing_domain=$(sqlite3 /home/clp/htdocs/app/data/db.sq3 "SELECT domain_name FROM site WHERE domain_name = '$domain_input'")
+            if [ -n "$existing_domain" ]; then
+                echo -e "${RED}Domain $domain_input already exists. Please choose a different domain name.${NC}"
+                continue
+            fi
+            
+            new_domain=$domain_input
+            break
+        fi
+    done
 
     # Ask about SSL installation
     install_ssl=false
@@ -156,138 +161,142 @@ main() {
     declare -A site_credentials
     declare -A site_db_credentials
 
-    # Process each selected site
-    for site in $selected_sites; do
-        # ASCII header for each site
-        echo "
+    # ASCII header for the site
+    echo "
 ═════════════════════════════════════════════════════════════════════════════
-                            Restoring Site: $site                           
+                  Restoring Site: $selected_site -> $new_domain                          
 ═════════════════════════════════════════════════════════════════════════════"
 
-        tmp_dir="/tmp/restoring"
-        rm -rf "$tmp_dir"
-        mkdir -p "$tmp_dir"
-        
-        echo "Restoring site: $site"
-        
-        # Clear the temporary directory for each site
-        rm -rf "$tmp_dir"/*
-        
-        # Copy the site files to the temporary directory
-        rclone copy "remote:$backup_dir/$selected_dir/$selected_time/home/$site/backup.tar" "$tmp_dir"
+    tmp_dir="/tmp/restoring"
+    rm -rf "$tmp_dir"
+    mkdir -p "$tmp_dir"
+    
+    echo "Restoring site: $selected_site as $new_domain"
+    
+    # Clear the temporary directory for each site
+    rm -rf "$tmp_dir"/*
+    
+    # Copy the site files to the temporary directory
+    rclone copy "remote:$backup_dir/$selected_dir/$selected_time/home/$selected_site/backup.tar" "$tmp_dir"
 
-        # Untar the backup file
-        if ! tar -xf "$tmp_dir/backup.tar" -C "$tmp_dir" > /dev/null 2>&1; then
-            echo -e "${RED}Error: Failed to extract backup for $site${NC}"
-            exit 1
-        fi
-        rm "$tmp_dir/backup.tar"
+    # Untar the backup file
+    if ! tar -xf "$tmp_dir/backup.tar" -C "$tmp_dir" > /dev/null 2>&1; then
+        echo -e "${RED}Error: Failed to extract backup for $selected_site${NC}"
+        exit 1
+    fi
+    rm "$tmp_dir/backup.tar"
 
-        # Get domain name from site-settings.json
-        domain=$(grep -oP '"domainName":\s*"\K[^"]+' "$tmp_dir"/home/*/site-settings.json | head -n1)
-        if [ -z "$domain" ]; then
-            echo -e "${RED}Error: Unable to extract domain name from site-settings.json for $site${NC} -- this is likely due to the backup being created by a version of CloudPanel < 2.4.2"
-            continue
-        fi
-        echo "Domain name for $site: $domain"
+    # Get domain name from site-settings.json
+    old_domain=$(grep -oP '"domainName":\s*"\K[^"]+' "$tmp_dir"/home/*/site-settings.json | head -n1)
+    if [ -z "$old_domain" ]; then
+        echo -e "${RED}Error: Unable to extract domain name from site-settings.json for $site${NC} -- this is likely due to the backup being created by a version of CloudPanel < 2.4.2"
+        continue
+    fi
+    domain="$new_domain"
+    
+    # Determine site type and PHP version
+    site_vhost_file=$(find "$tmp_dir/home" -name "site-vhost" | head -n 1)
+    site_settings_file=$(find "$tmp_dir/home" -name "site-settings.json" | head -n 1)
+    
+    # Get PHP version if available (only for PHP-based sites)
+    php_version="8.3" # default value
+    if [ -f "$site_settings_file" ]; then
+        # First check site-settings.json for type
+        site_type_setting=$(grep -oP '"type":\s*"\K[^"]+' "$site_settings_file")
         
-        # Determine site type and PHP version
-        site_vhost_file=$(find "$tmp_dir/home" -name "site-vhost" | head -n 1)
-        site_settings_file=$(find "$tmp_dir/home" -name "site-settings.json" | head -n 1)
-        
-        # Get PHP version if available (only for PHP-based sites)
-        php_version="8.3" # default value
-        if [ -f "$site_settings_file" ]; then
-            # First check site-settings.json for type
-            site_type_setting=$(grep -oP '"type":\s*"\K[^"]+' "$site_settings_file")
-            
-            # Only check PHP version for PHP-based sites
-            if [ "$site_type_setting" = "php" ] || [ "$site_type_setting" = "wordpress" ]; then
-                detected_version=$(grep -oP '"version":\s*"\K[^"]+' "$site_settings_file" || echo "")
-                if [ -n "$detected_version" ]; then
-                    php_version=$detected_version
-                fi
+        # Only check PHP version for PHP-based sites
+        if [ "$site_type_setting" = "php" ] || [ "$site_type_setting" = "wordpress" ]; then
+            detected_version=$(grep -oP '"version":\s*"\K[^"]+' "$site_settings_file" || echo "")
+            if [ -n "$detected_version" ]; then
+                php_version=$detected_version
             fi
         fi
+    fi
+    
+    if [ -f "$site_vhost_file" ] && [ -f "$site_settings_file" ]; then
+        # First check site-settings.json for type
+        site_type_setting=$(grep -oP '"type":\s*"\K[^"]+' "$site_settings_file")
         
-        if [ -f "$site_vhost_file" ] && [ -f "$site_settings_file" ]; then
-            # First check site-settings.json for type
-            site_type_setting=$(grep -oP '"type":\s*"\K[^"]+' "$site_settings_file")
-            
-            if [ "$site_type_setting" = "reverse-proxy" ]; then
-                site_type="reverse-proxy"
-            elif [ "$site_type_setting" = "php" ] && ! grep -q "wp-admin" "$site_vhost_file"; then
-                site_type="php"
-            elif grep -q "wp-admin" "$site_vhost_file"; then
-                site_type="wordpress"
-            else
-                site_type="static_html"
-            fi
+        if [ "$site_type_setting" = "reverse-proxy" ]; then
+            site_type="reverse-proxy"
+        elif [ "$site_type_setting" = "php" ] && ! grep -q "wp-admin" "$site_vhost_file"; then
+            site_type="php"
+        elif grep -q "wp-admin" "$site_vhost_file"; then
+            site_type="wordpress"
         else
-            echo -e "${RED}Error: Required configuration files not found for $site${NC}"
-            continue
+            site_type="static_html"
         fi
-        echo "Site type for $site: $site_type"
+    else
+        echo -e "${RED}Error: Required configuration files not found for $selected_site${NC}"
+        exit 1
+    fi
+    echo "Site type for $new_domain: $site_type"
 
-        #delete site if exists
-        clpctl site:delete --domainName=$domain --force || true
-        sleep 2
+    #delete site if exists
+    clpctl site:delete --domainName=$domain --force || true
+    sleep 2
 
-        # Extract site user from site-settings.json instead of generating it
-        site_user=$(grep -oP '"siteUser":\s*"\K[^"]+' "$site_settings_file")
-        if [ -z "$site_user" ]; then
-            echo -e "${RED}Error: Could not extract site user from site-settings.json for $site${NC}"
-            continue
-        fi
-        echo "Site user for $site: $site_user"
+    # Extract site user from site-settings.json instead of generating it
+    old_site_user=$(grep -oP '"siteUser":\s*"\K[^"]+' "$site_settings_file")
+    if [ -z "$old_site_user" ]; then
+        echo -e "${RED}Error: Could not extract site user from site-settings.json for $site${NC}"
+        continue
+    fi
 
-        # Generate a random password
-        password=$(openssl rand -base64 20 | tr -dc 'a-zA-Z0-9!@#$%^&*()_+' | head -c20)
-        
-        # Truncate site_user if it's longer than 32 characters (MySQL username limit)
-        site_path="$tmp_dir"/home/*/htdocs
+    # Create site user from domain name (remove last dot and everything after it)
+    site_user=$(echo "$new_domain" | sed 's/\.[^.]*$//' | tr -d '.')
+    # Remove all remaining dots from site_user
+    site_user=$(echo "$site_user" | tr -d '.')
+    
+    # Truncate site_user if it's longer than 32 characters (MySQL username limit)
+    site_user="${site_user:0:32}"
 
-        rm -rf /home/$site_user
-        
-        # Choose the appropriate site:add command based on site_type
-        case $site_type in
-            wordpress)
-                echo "Adding WordPress site: $domain with PHP version $php_version"
-                clpctl site:add:php --domainName=$domain --phpVersion=$php_version --vhostTemplate='WordPress' --siteUser=$site_user --siteUserPassword=$password
-                ;;
-            php)
-                echo "Adding PHP site: $domain with PHP version $php_version"
-                clpctl site:add:php --domainName=$domain --phpVersion=$php_version --vhostTemplate='Generic' --siteUser=$site_user --siteUserPassword=$password
-                ;;
-            static_html)
-                echo "Adding static HTML site: $domain"
-                clpctl site:add:static --domainName=$domain --siteUser=$site_user --siteUserPassword=$password
-                ;;
-            reverse-proxy)
-                echo "Adding reverse proxy site: $domain"
-                # Extract and unescape the reverse proxy URL
-                proxy_url=$(grep -oP '"url":\s*"\K[^"]+' "$site_settings_file" | sed 's/\\\//\//g')
-                if [ -z "$proxy_url" ]; then
-                    proxy_url='http://127.0.0.1:8000' # fallback default
-                fi
-                clpctl site:add:reverse-proxy --domainName=$domain --reverseProxyUrl="$proxy_url" --siteUser=$site_user --siteUserPassword=$password
-                ;;
-            *)
-                echo -e "${RED}Error: Unknown site type for $domain${NC}"
-                continue
-                ;;
-        esac
+    # Generate a random password
+    password=$(openssl rand -base64 20 | tr -dc 'a-zA-Z0-9!@#$%^&*()_+' | head -c20)
+    
+    site_path="$tmp_dir"/home/*/htdocs
 
-        # Clear htdocs
-        rm -rf /home/$site_user/htdocs/*
+    rm -rf /home/$site_user
+    
+    # Choose the appropriate site:add command based on site_type
+    case $site_type in
+        wordpress)
+            echo "Adding WordPress site: $domain with PHP version $php_version"
+            clpctl site:add:php --domainName=$domain --phpVersion=$php_version --vhostTemplate='WordPress' --siteUser=$site_user --siteUserPassword=$password
+            ;;
+        php)
+            echo "Adding PHP site: $domain with PHP version $php_version"
+            clpctl site:add:php --domainName=$domain --phpVersion=$php_version --vhostTemplate='Generic' --siteUser=$site_user --siteUserPassword=$password
+            ;;
+        static_html)
+            echo "Adding static HTML site: $domain"
+            clpctl site:add:static --domainName=$domain --siteUser=$site_user --siteUserPassword=$password
+            ;;
+        reverse-proxy)
+            echo "Adding reverse proxy site: $domain"
+            # Extract and unescape the reverse proxy URL
+            proxy_url=$(grep -oP '"url":\s*"\K[^"]+' "$site_settings_file" | sed 's/\\\//\//g')
+            if [ -z "$proxy_url" ]; then
+                proxy_url='http://127.0.0.1:8000' # fallback default
+            fi
+            clpctl site:add:reverse-proxy --domainName=$domain --reverseProxyUrl="$proxy_url" --siteUser=$site_user --siteUserPassword=$password
+            ;;
+        *)
+            echo -e "${RED}Error: Unknown site type for $domain${NC}"
+            exit 1
+            ;;
+    esac
 
-        # Find the correct home directory path
-        home_path=$(find "$tmp_dir/home" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+    # Clear htdocs
+    rm -rf /home/$site_user/htdocs/*
 
-        if [ -z "$home_path" ]; then
-            echo -e "${RED}Error: Could not find home directory for $domain${NC}"
-            continue
-        fi
+    # Find the correct home directory path
+    home_path=$(find "$tmp_dir/home" -mindepth 1 -maxdepth 1 -type d | head -n 1)
+
+    if [ -z "$home_path" ]; then
+        echo -e "${RED}Error: Could not find home directory for $domain${NC}"
+        exit 1
+    fi
 
         # Recursively copy everything from home_path to /home/$site_user/
         cp -R "$home_path"/* "/home/$site_user/" || echo "Warning: Some files may not have been copied for $domain"
@@ -297,13 +306,17 @@ main() {
         find /home/$site_user -type d -exec chmod 755 {} \;
         find /home/$site_user -type f -exec chmod 644 {} \;
 
+        #Update the website folder name
+        mv /home/$site_user/htdocs/$old_domain /home/$site_user/htdocs/$domain
+        rm -rf /home/$site_user/backups/databases/$old_site_user 
+
         # Only set wp-config.php permissions if it's a WordPress site
         if [ "$site_type" = "wordpress" ]; then
             chmod 600 /home/$site_user/htdocs/$domain/wp-config.php
         fi
 
         # Find the correct database backup path
-        dbs_path="$tmp_dir/home/$site_user/backups/databases"
+        dbs_path="$tmp_dir/home/$old_site_user/backups/databases"
         
         # Check if dbs_path exists
         if [ -d "$dbs_path" ]; then
@@ -316,29 +329,12 @@ main() {
             for db_folder in "$dbs_path"/*; do
                 if [ -d "$db_folder" ]; then
                     db=$(basename "$db_folder")
-                    echo "Processing database: $db"
+                    echo "Processing database: $db as $site_user"
+                    db=$site_user
                     
                     # Initialize database credentials
-                    db_username=$db
+                    db_username=$site_user
                     db_password=$password
-                    
-                    # Check if we have existing credentials
-                    if [ -f "$credentials_file" ]; then
-                        echo "Found existing credentials file"
-                        if command -v jq &> /dev/null; then
-                            # Try to find matching database credentials
-                            if jq -e --arg db "$db" '.databases[] | select(.name == $db)' "$credentials_file" > /dev/null; then
-                                db_username=$(jq -r --arg db "$db" '.databases[] | select(.name == $db) | .username' "$credentials_file")
-                                db_password=$(jq -r --arg db "$db" '.databases[] | select(.name == $db) | .password' "$credentials_file")
-                                echo "Using existing credentials for database $db"
-                            else
-                                echo "No existing credentials found for database $db, using new credentials"
-                            fi
-                        else
-                            echo "jq not found, installing..."
-                            apt-get update && apt-get install -y jq
-                        fi
-                    fi
                     
                     # Find the latest backup file
                     latest_backup=$(find "$db_folder" -name "*.sql.gz" | sort -r | head -n1)
@@ -368,6 +364,16 @@ Database Pass: $db_password
                         
                         # Import the uncompressed SQL file
                         clpctl db:import --databaseName=$db --file="/tmp/${db}_temp.sql"
+
+                        # Then update the search/replace operation to use these credentials
+                        php searchReplaceDb.php \
+                            --host=localhost \
+                            --user=$site_user \
+                            --password=$password \
+                            --database=$db \
+                            --search="$old_domain" \
+                            --replace="$domain" \
+                            2>/dev/null || echo -e "${RED}Error during search/replace operation${NC}"
                         
                         # Remove the temporary uncompressed file
                         rm "/tmp/${db}_temp.sql"
@@ -422,6 +428,9 @@ Database Pass: $db_password
         vhost_file=$(find "$tmp_dir/home" -name "site-vhost" | head -n 1)
         if [ -f "$vhost_file" ]; then
             vhost_content=$(cat "$vhost_file")
+
+            vhost_content=$(echo "$vhost_content" | sed "s|$old_domain|$domain|g" | sed "s|$old_site_user|$site_user|g")
+
             sqlite3 /home/clp/htdocs/app/data/db.sq3 <<EOF
 UPDATE site 
 SET vhost_template = '${vhost_content//\'/\'\'}'
@@ -445,7 +454,11 @@ EOF
                 echo "Enabled PageSpeed for site ID $site_id"
             fi
             
-            cp "$nginx_vhost_file" /etc/nginx/sites-enabled/
+            # Replace old domain and site user in nginx vhost file
+            sed -i "s|$old_domain|$domain|g" "$nginx_vhost_file"
+            sed -i "s|$old_site_user|$site_user|g" "$nginx_vhost_file"
+
+            cp "$nginx_vhost_file" "/etc/nginx/sites-enabled/$domain.conf"
             echo "Copied and updated nginx vhost file for $domain with PHP-FPM port $php_fpm_port"
         else
             echo -e "${RED}Error: Could not find nginx vhost file for $domain${NC}"
@@ -456,6 +469,10 @@ EOF
         if [ -f "$site_settings_file" ]; then
             # Extract required information
             root_directory=$(grep -oP '"rootDirectory":\s*"\K[^"]+' "$site_settings_file")
+
+            # Replace old site user in root directory
+            root_directory=$(echo "$root_directory" | sed "s|$old_domain|$domain|g")
+
             # Extract multi-line pageSpeed content and remove all JSON escape characters
             page_speed=$(awk -v RS='pageSpeed": "' -v FS='",' 'NR==2{print $1}' "$site_settings_file" | \
                         sed 's/\\n/\n/g' | \
@@ -594,19 +611,16 @@ EOF
             fi
         fi
 
-        echo "Finished restoring $site"
-        echo "
+    echo "Finished restoring $selected_site"
+    echo "
 ════════════════════════════════════════════════════════════════════════════
-                          End of Site: $site                          
+                          End of Site: $selected_site                          
 ════════════════════════════════════════════════════════════════════════════
 
 "
-    done
 
     # Clean up the temporary directory
     rm -rf "$tmp_dir"
-
-    echo "All selected sites have been restored."
 
     echo -e "${BLUE}
 ═══════════════════════════════════════════
